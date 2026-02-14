@@ -1,0 +1,5 @@
+{
+  "name": "TopRes AI - Neural Resume Ranker",
+  "description": "A high-end AI-powered resume ranking platform using a multi-stage ML pipeline and the Gemini 3 Pro model for deep semantic analysis.",
+  "requestFramePermissions": []
+}
