@@ -528,7 +528,7 @@ export const RankingTable: React.FC<{
   onToggleSelect: (id: string) => void;
   similarityThreshold: number;
   duplicateIds?: string[];
-}> = ({
+}> = React.memo(({
   resumes,
   onShortlist,
   onPreview,
@@ -536,11 +536,6 @@ export const RankingTable: React.FC<{
   onToggleSelect,
   similarityThreshold,
   duplicateIds = [],
-  onShortlist,
-  onPreview,
-  selectedIds,
-  onToggleSelect,
-  similarityThreshold,
 }) => {
   return (
     <div className="overflow-x-auto">
@@ -660,4 +655,4 @@ export const RankingTable: React.FC<{
       </table>
     </div>
   );
-};
+});

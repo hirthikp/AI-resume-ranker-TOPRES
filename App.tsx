@@ -771,10 +771,8 @@ const ResumePreviewModal: React.FC<{
  * HR GATEWAY COMPONENT
  */
 const HRGateway: React.FC = () => {
-  const [resumes, setResumes] = useState<Resume[]>(storage.getResumes());
-  const [jd, setJD] = useState<JobDescription>(
-    storage.getJD().title ? storage.getJD() : DEFAULT_JD,
-  );
+  const [resumes, setResumes] = useState<Resume[]>([]);
+  const [jd, setJD] = useState<JobDescription>(DEFAULT_JD);
   const [isAnalyzing, setIsAnalyzing] = useState<string | null>(null);
   const [batchRanking, setBatchRanking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -808,12 +806,61 @@ const HRGateway: React.FC = () => {
   const ITEMS_PER_PAGE = 20;
   const [duplicateResumeIds, setDuplicateResumeIds] = useState<string[]>([]);
   const [autoScanInProgress, setAutoScanInProgress] = useState(false);
+  const [isLoadingData, setIsLoadingData] = useState(true);
 
   const navigate = useNavigate();
 
+  // Load data from Supabase on mount
   useEffect(() => {
-    storage.saveJD(jd);
-  }, [jd]);
+    const loadData = async () => {
+      setIsLoadingData(true);
+      try {
+        const [loadedResumes, loadedJD] = await Promise.all([
+          storage.getAllResumes(), // Recruiters see all resumes
+          storage.getJD(),
+        ]);
+        setResumes(loadedResumes);
+        if (loadedJD.title) setJD(loadedJD);
+      } catch (err) {
+        console.error('Failed to load data:', err);
+        setError('Failed to load data from database');
+      } finally {
+        setIsLoadingData(false);
+      }
+    };
+    loadData();
+  }, []);
+
+  // Auto-save resumes to Supabase whenever they change (debounced)
+  useEffect(() => {
+    if (isLoadingData) return; // Don't save during initial load
+    
+    const saveTimer = setTimeout(async () => {
+      try {
+        await storage.saveResumes(resumes);
+      } catch (err: any) {
+        console.error('Failed to save resumes:', err);
+        // Don't show error to user for background saves
+      }
+    }, 500); // Debounce by 500ms
+
+    return () => clearTimeout(saveTimer);
+  }, [resumes, isLoadingData]);
+
+  // Auto-save JD to Supabase whenever it changes (debounced)
+  useEffect(() => {
+    if (isLoadingData) return;
+    
+    const saveTimer = setTimeout(async () => {
+      try {
+        await storage.saveJD(jd);
+      } catch (err) {
+        console.error('Failed to save JD:', err);
+      }
+    }, 500);
+
+    return () => clearTimeout(saveTimer);
+  }, [jd, isLoadingData]);
 
   const currentPreviewResume = useMemo(() => {
     return resumes.find((r) => r.id === previewResumeId) || null;
@@ -1941,7 +1988,7 @@ const HRGateway: React.FC = () => {
                 </div>
               )}
             </div>
-            </div>
+          </div>
           )}
         </div>
       </div>
@@ -1954,11 +2001,18 @@ const HRGateway: React.FC = () => {
  */
 const CandidateLab: React.FC = () => {
   const [currentUser] = useState<User | null>(storage.getCurrentUser());
-  const [resumes, setResumes] = useState<Resume[]>(
-    storage.getResumes().filter((r) => r.candidateId === currentUser?.id),
-  );
+  const [resumes, setResumes] = useState<Resume[]>([]);
   const [lastUploaded, setLastUploaded] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  // Load resumes on mount
+  useEffect(() => {
+    const loadResumes = async () => {
+      const allResumes = await storage.getResumes(); // Already filtered by current user
+      setResumes(allResumes);
+    };
+    loadResumes();
+  }, [currentUser?.id]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -2029,12 +2083,10 @@ const CandidateLab: React.FC = () => {
       if (batchReads.length > 0) {
         setResumes((prev) => {
           const updated = [...batchReads, ...prev];
-          try {
-            storage.saveResumes(updated);
-          } catch (err: any) {
-            alert(err.message || 'Failed to save resumes to storage');
-            return prev; // Don't update state if storage fails
-          }
+          // Save to Supabase asynchronously (fire and forget)
+          storage.saveResumes(updated).catch(err => {
+            console.error('Failed to save resumes:', err);
+          });
           return updated;
         });
       }
@@ -2193,24 +2245,25 @@ const Login: React.FC = () => {
     if (!username || !password) return setError("Incomplete credential nodes.");
     setLoading(true);
     setError(null);
-    await new Promise((r) => setTimeout(r, 800));
-    const users = storage.getUsers();
+    
+    try {
+      await new Promise((r) => setTimeout(r, 800));
+      const user = await storage.getUserByUsername(username);
 
-    const user = users.find(
-      (u) =>
-        u.username.toLowerCase() === username.toLowerCase() &&
-        u.password === password &&
-        (u.role === role ||
-          (u.role === UserRole.MASTER_RECRUITER &&
-            role === UserRole.RECRUITER)),
-    );
-
-    if (user) {
-      storage.setCurrentUser(user);
-      navigate(user.role === UserRole.CANDIDATE ? "/lab" : "/gateway");
-    } else {
-      setError("Access Denied: Neural identifier mismatch.");
+      if (user && user.password === password &&
+          (user.role === role ||
+           (user.role === UserRole.MASTER_RECRUITER &&
+            role === UserRole.RECRUITER))) {
+        storage.setCurrentUser(user);
+        navigate(user.role === UserRole.CANDIDATE ? "/lab" : "/gateway");
+      } else {
+        setError("Access Denied: Neural identifier mismatch.");
+      }
+    } catch (e) {
+      console.error('Login error:', e);
+      setError("Connection error. Please try again.");
     }
+    
     setLoading(false);
   };
 
@@ -2218,23 +2271,31 @@ const Login: React.FC = () => {
     if (!username || !password) return setError("Incomplete credential nodes.");
     setLoading(true);
     setError(null);
-    await new Promise((r) => setTimeout(r, 800));
-    const users = storage.getUsers();
-    if (
-      users.find((u) => u.username.toLowerCase() === username.toLowerCase())
-    ) {
-      setLoading(false);
-      return setError("Identity conflict: Node identifier already exists.");
+    
+    try {
+      await new Promise((r) => setTimeout(r, 800));
+      const existingUser = await storage.getUserByUsername(username);
+      
+      if (existingUser) {
+        setLoading(false);
+        return setError("Identity conflict: Node identifier already exists.");
+      }
+      
+      const newUser: User = {
+        id: Math.random().toString(36).substr(2, 9),
+        username,
+        password,
+        role,
+      };
+      
+      await storage.saveUser(newUser);
+      storage.setCurrentUser(newUser);
+      navigate(role === UserRole.CANDIDATE ? "/lab" : "/gateway");
+    } catch (e) {
+      console.error('Registration error:', e);
+      setError("Failed to create account. Please try again.");
     }
-    const newUser: User = {
-      id: Math.random().toString(36).substr(2, 9),
-      username,
-      password,
-      role,
-    };
-    storage.saveUsers([...users, newUser]);
-    storage.setCurrentUser(newUser);
-    navigate(role === UserRole.CANDIDATE ? "/lab" : "/gateway");
+    
     setLoading(false);
   };
 
