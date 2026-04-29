@@ -2,8 +2,14 @@ import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+export const useLocalStorageMode =
+  String(import.meta.env.VITE_USE_LOCAL_STORAGE || '').toLowerCase() === 'true';
+export const isSupabaseConfigured =
+  !useLocalStorageMode && Boolean(supabaseUrl && supabaseAnonKey);
 
-if (!supabaseUrl || !supabaseAnonKey) {
+if (useLocalStorageMode) {
+  console.warn('Local storage mode enabled. Supabase integration is bypassed.');
+} else if (!isSupabaseConfigured) {
   console.warn('Supabase credentials not found. Using local storage fallback.');
 }
 

@@ -2293,7 +2293,18 @@ const Login: React.FC = () => {
       navigate(role === UserRole.CANDIDATE ? "/lab" : "/gateway");
     } catch (e) {
       console.error('Registration error:', e);
-      setError("Failed to create account. Please try again.");
+      const rawMessage =
+        e instanceof Error && e.message
+          ? e.message
+          : typeof e === "object" && e !== null && "message" in e
+            ? String((e as { message?: unknown }).message || "") ||
+              "Failed to create account. Please try again."
+            : "Failed to create account. Please try again.";
+
+      const message = /invalid api key/i.test(rawMessage)
+        ? "Invalid Supabase API key. Verify VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env, then restart the dev server."
+        : rawMessage;
+      setError(message);
     }
     
     setLoading(false);

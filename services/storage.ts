@@ -1,12 +1,60 @@
 
 import { Resume, User, UserRole, JobDescription } from "../types";
-import { supabase } from "../supabase";
+import { supabase, isSupabaseConfigured } from "../supabase";
 
 const STORAGE_KEYS = {
   RESUMES: 'topres_resumes',
   USERS: 'topres_users',
   JD: 'topres_active_jd',
   CURRENT_USER: 'topres_session'
+};
+
+const getLocalUsers = (): User[] => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.USERS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    console.error('Error reading local users:', e);
+    return [];
+  }
+};
+
+const saveLocalUsers = (users: User[]): void => {
+  localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
+};
+
+const getLocalResumes = (): Resume[] => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.RESUMES);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    console.error('Error reading local resumes:', e);
+    return [];
+  }
+};
+
+const saveLocalResumes = (resumes: Resume[]): void => {
+  localStorage.setItem(STORAGE_KEYS.RESUMES, JSON.stringify(resumes));
+};
+
+const getLocalJDMap = (): Record<string, JobDescription> => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.JD);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (e) {
+    console.error('Error reading local job descriptions:', e);
+    return {};
+  }
+};
+
+const saveLocalJDMap = (value: Record<string, JobDescription>): void => {
+  localStorage.setItem(STORAGE_KEYS.JD, JSON.stringify(value));
 };
 
 // Helper to get current user ID from session
@@ -19,6 +67,10 @@ export const storage = {
   getResumes: async (): Promise<Resume[]> => {
     const userId = getCurrentUserId();
     if (!userId) return [];
+
+    if (!isSupabaseConfigured) {
+      return getLocalResumes().filter((r) => r.candidateId === userId);
+    }
 
     try {
       const { data, error } = await supabase
@@ -47,6 +99,10 @@ export const storage = {
   },
 
   getAllResumes: async (): Promise<Resume[]> => {
+    if (!isSupabaseConfigured) {
+      return getLocalResumes();
+    }
+
     try {
       const { data, error } = await supabase
         .from('resumes')
@@ -73,6 +129,11 @@ export const storage = {
   },
 
   saveResumes: async (resumes: Resume[]): Promise<void> => {
+    if (!isSupabaseConfigured) {
+      saveLocalResumes(resumes);
+      return;
+    }
+
     const userId = getCurrentUserId();
     if (!userId) {
       throw new Error('No user logged in');
@@ -120,19 +181,40 @@ export const storage = {
 
       if (error) throw error;
 
-      return (data || []).map(row => ({
+      const users = (data || []).map(row => ({
         id: row.id,
         username: row.username,
         password: row.password,
         role: row.role as UserRole,
       }));
+
+      saveLocalUsers(users);
+      return users;
     } catch (e) {
       console.error('Error fetching users from Supabase:', e);
-      return [];
+      return getLocalUsers();
     }
   },
 
   saveUser: async (user: User): Promise<void> => {
+    const upsertLocalUser = () => {
+      const users = getLocalUsers();
+      const existingIndex = users.findIndex(u => u.username === user.username);
+
+      if (existingIndex >= 0) {
+        users[existingIndex] = user;
+      } else {
+        users.push(user);
+      }
+
+      saveLocalUsers(users);
+    };
+
+    if (!isSupabaseConfigured) {
+      upsertLocalUser();
+      return;
+    }
+
     try {
       const { error } = await supabase
         .from('users')
@@ -144,13 +226,22 @@ export const storage = {
         });
 
       if (error) throw error;
+      upsertLocalUser();
     } catch (e) {
       console.error('Error saving user to Supabase:', e);
-      throw e;
+      if (e instanceof Error) {
+        throw new Error(`Supabase user save failed: ${e.message}`);
+      }
+      throw new Error('Supabase user save failed. Check your database policies and configuration.');
     }
   },
 
   getUserByUsername: async (username: string): Promise<User | null> => {
+    const getLocalUserByUsername = (): User | null => {
+      const users = getLocalUsers();
+      return users.find(u => u.username === username) || null;
+    };
+
     try {
       const { data, error } = await supabase
         .from('users')
@@ -158,25 +249,61 @@ export const storage = {
         .eq('username', username)
         .single();
 
-      if (error && error.code !== 'PGRST116') throw error;
+      if (error && error.code !== 'PGRST116') {
+        if (isSupabaseConfigured) {
+          throw new Error(`Supabase user lookup failed: ${error.message}`);
+        }
+        return getLocalUserByUsername();
+      }
 
-      if (!data) return null;
+      if (!data) return isSupabaseConfigured ? null : getLocalUserByUsername();
 
-      return {
+      const user = {
         id: data.id,
         username: data.username,
         password: data.password,
         role: data.role as UserRole,
       };
+
+      const users = getLocalUsers();
+      const existingIndex = users.findIndex(u => u.username === user.username);
+      if (existingIndex >= 0) {
+        users[existingIndex] = user;
+      } else {
+        users.push(user);
+      }
+      saveLocalUsers(users);
+
+      return user;
     } catch (e) {
       console.error('Error fetching user by username:', e);
-      return null;
+      if (isSupabaseConfigured) {
+        if (e instanceof Error) {
+          if (e.message.startsWith('Supabase user lookup failed:')) {
+            throw e;
+          }
+          throw new Error(`Supabase user lookup failed: ${e.message}`);
+        }
+        const fallbackMessage =
+          typeof e === 'object' && e !== null && 'message' in e
+            ? String((e as { message?: unknown }).message || '')
+            : '';
+        throw new Error(
+          `Supabase user lookup failed${fallbackMessage ? `: ${fallbackMessage}` : '.'}`,
+        );
+      }
+      return getLocalUserByUsername();
     }
   },
 
   getJD: async (): Promise<JobDescription> => {
     const userId = getCurrentUserId();
     if (!userId) return { title: '', content: '' };
+
+    if (!isSupabaseConfigured) {
+      const map = getLocalJDMap();
+      return map[userId] || { title: '', content: '' };
+    }
 
     try {
       const { data, error } = await supabase
@@ -203,6 +330,13 @@ export const storage = {
     const userId = getCurrentUserId();
     if (!userId) {
       throw new Error('No user logged in');
+    }
+
+    if (!isSupabaseConfigured) {
+      const map = getLocalJDMap();
+      map[userId] = jd;
+      saveLocalJDMap(map);
+      return;
     }
 
     try {
